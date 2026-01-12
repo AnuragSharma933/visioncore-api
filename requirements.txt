@@ -12,6 +12,7 @@ accelerate==1.2.1
 kornia==0.7.3
 timm==1.0.12
 einops==0.8.0
+mediapipe==0.10.14
 rembg==2.0.60
 segment-anything==1.0
 simple-lama-inpainting==0.1.2
@@ -30,3 +31,10 @@ matplotlib==3.9.3
 seaborn==0.13.2
 pandas==2.2.3
 joblib==1.4.2
+protobuf==4.25.5
+flatbuffers==24.3.25
+attrs==24.3.0
+certifi
+charset-normalizer
+idna
+urllib3
