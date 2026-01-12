@@ -4,6 +4,7 @@ python-multipart==0.0.20
 Pillow==9.5.0
 opencv-python-headless==4.10.0.84
 scikit-image==0.24.0
+scikit-learn==1.5.2
 torch==2.5.1
 torchvision==0.20.1
 transformers==4.47.1
@@ -25,3 +26,7 @@ requests==2.32.3
 numpy==1.26.4
 scipy==1.14.1
 pydantic==2.10.5
+matplotlib==3.9.3
+seaborn==0.13.2
+pandas==2.2.3
+joblib==1.4.2
