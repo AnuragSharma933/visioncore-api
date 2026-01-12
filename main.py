@@ -7,7 +7,7 @@ import asyncio
 from config import settings
 from auth import check_access, add_watermark
 
-# Import your existing service classes
+# Import existing service INSTANCES (not classes!)
 from services.upscaler import upscaler_instance
 from services.background import bg_remover_instance
 from services.eraser import eraser_instance
@@ -37,50 +37,17 @@ app.add_middleware(
 # Include webhook routes
 app.include_router(webhook_router, tags=["Webhooks"])
 
-# Initialize models
-models = {
-    "colorizer": ImageColorizer(),
-    "upscaler": ImageUpscaler(),
-    "background": BackgroundRemover(),
-    "eraser": ObjectEraser(),
-    "analyzer": ImageAnalyzer(),
-    "tools": ImageTools(),
-    "creative": CreativeEffects()
-}
-
-models_loaded = False
-
-async def load_models():
-    """Load all AI models on startup"""
-    global models_loaded
-    try:
-        print("🔄 Loading AI models...")
-        models["colorizer"].load_model()
-        models["upscaler"].load_model()
-        models["background"].load_model()
-        models["eraser"].load_model()
-        models["analyzer"].load_model()
-        models_loaded = True
-        print("✅ All models loaded successfully!")
-    except Exception as e:
-        print(f"⚠️ Model loading error: {e}")
-        models_loaded = False
-
-@app.on_event("startup")
-async def startup_event():
-    await load_models()
-
 @app.get("/")
 async def root():
     return {
         "status": "healthy",
         "version": settings.API_VERSION,
-        "models_loaded": models_loaded
+        "message": "VisionCore API is running!"
     }
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "models": models_loaded}
+    return {"status": "ok"}
 
 # Helper functions
 async def load_img(file: UploadFile) -> Image.Image:
@@ -117,7 +84,7 @@ async def compress(
 ):
     """Compress image with smart optimization"""
     img = await load_img(file)
-    result = models["tools"].compress(img, quality)
+    result = tool_instance.smart_compress(img, quality)
     return return_img(result)
 
 @app.post("/v1/palette", dependencies=[Depends(check_access("palette"))])
@@ -127,7 +94,7 @@ async def color_palette(
 ):
     """Extract color palette from image"""
     img = await load_img(file)
-    colors = models["analyzer"].extract_palette(img)
+    colors = analysis_instance.get_palette(img)
     return {"colors": colors}
 
 @app.post("/v1/signature-rip", dependencies=[Depends(check_access("signature-rip"))])
@@ -137,7 +104,7 @@ async def signature_rip(
 ):
     """Extract signature from document"""
     img = await load_img(file)
-    result = models["tools"].extract_signature(img)
+    result = tool_instance.signature_rip(img)
     return return_img(result)
 
 @app.post("/v1/auto-tag", dependencies=[Depends(check_access("auto-tag"))])
@@ -147,7 +114,7 @@ async def auto_tag(
 ):
     """Generate AI tags for image"""
     img = await load_img(file)
-    tags = models["analyzer"].generate_tags(img)
+    tags = analysis_instance.get_tags(img)
     return {"tags": tags}
 
 @app.post("/v1/upscale", dependencies=[Depends(check_access("upscale"))])
@@ -157,7 +124,7 @@ async def upscale(
 ):
     """Upscale image 4x using Real-ESRGAN"""
     img = await load_img(file)
-    result = await process_with_timeout(models["upscaler"].upscale, img, timeout=120)
+    result = await process_with_timeout(upscaler_instance.process_image, img, timeout=120)
 
     if user.get("_demo_mode"):
         result = add_watermark(result, user.get("_demos_left", 0))
@@ -171,7 +138,7 @@ async def remove_background(
 ):
     """Remove background from image"""
     img = await load_img(file)
-    result = await process_with_timeout(models["background"].remove, img, timeout=60)
+    result = await process_with_timeout(bg_remover_instance.remove_background, img, timeout=60)
 
     if user.get("_demo_mode"):
         result = add_watermark(result, user.get("_demos_left", 0))
@@ -186,7 +153,7 @@ async def portrait_mode(
 ):
     """Add portrait mode blur effect"""
     img = await load_img(file)
-    result = models["creative"].portrait_blur(img, blur_strength)
+    result = creative_instance.portrait_mode(img)
 
     if user.get("_demo_mode"):
         result = add_watermark(result, user.get("_demos_left", 0))
@@ -200,7 +167,7 @@ async def sticker_maker(
 ):
     """Create sticker from image"""
     img = await load_img(file)
-    result = models["creative"].create_sticker(img)
+    result = creative_instance.sticker_maker(img)
 
     if user.get("_demo_mode"):
         result = add_watermark(result, user.get("_demos_left", 0))
@@ -214,7 +181,7 @@ async def colorize(
 ):
     """Colorize black and white photos"""
     img = await load_img(file)
-    result = await process_with_timeout(models["colorizer"].colorize, img, timeout=90)
+    result = await process_with_timeout(colorizer_instance.process_image, img, timeout=90)
 
     if user.get("_demo_mode"):
         result = add_watermark(result, user.get("_demos_left", 0))
@@ -228,7 +195,7 @@ async def anime_style(
 ):
     """Apply anime style filter"""
     img = await load_img(file)
-    result = models["creative"].anime_filter(img)
+    result = creative_instance.anime_style(img)
 
     if user.get("_demo_mode"):
         result = add_watermark(result, user.get("_demos_left", 0))
@@ -243,7 +210,7 @@ async def instant_studio(
 ):
     """Add professional studio background"""
     img = await load_img(file)
-    result = models["creative"].studio_background(img, background_type)
+    result = creative_instance.instant_studio(img)
 
     if user.get("_demo_mode"):
         result = add_watermark(result, user.get("_demos_left", 0))
@@ -258,7 +225,7 @@ async def extend_image(
 ):
     """Extend image to different aspect ratio"""
     img = await load_img(file)
-    result = models["creative"].extend_canvas(img, ratio)
+    result = tool_instance.extend_image(img)
 
     if user.get("_demo_mode"):
         result = add_watermark(result, user.get("_demos_left", 0))
@@ -274,7 +241,7 @@ async def magic_erase(
     """Remove objects from image using inpainting"""
     img = await load_img(file)
     mask_img = await load_img(mask)
-    result = await process_with_timeout(models["eraser"].erase, img, mask_img, timeout=90)
+    result = await process_with_timeout(eraser_instance.process_image, img, mask_img, timeout=90)
 
     if user.get("_demo_mode"):
         result = add_watermark(result, user.get("_demos_left", 0))
@@ -288,7 +255,7 @@ async def vectorize(
 ):
     """Convert image to vector SVG"""
     img = await load_img(file)
-    svg_data = models["tools"].vectorize(img)
+    svg_data = tool_instance.convert_to_svg(img)
 
     if user.get("_demo_mode"):
         return {"error": "SVG cannot have watermark. Upgrade to download."}
@@ -305,7 +272,7 @@ async def privacy_blur(
 ):
     """Auto-detect and blur faces for privacy"""
     img = await load_img(file)
-    result = models["tools"].blur_faces(img)
+    result = analysis_instance.privacy_blur(img)
 
     if user.get("_demo_mode"):
         result = add_watermark(result, user.get("_demos_left", 0))
