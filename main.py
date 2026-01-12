@@ -8,13 +8,13 @@ from config import settings
 from auth import check_access, add_watermark
 
 # Import your existing service classes
-from services.colorizer import ImageColorizer
-from services.upscaler import ImageUpscaler
-from services.background import BackgroundRemover
-from services.eraser import ObjectEraser
-from services.analysis import ImageAnalyzer
-from services.tools import ImageTools
-from services.creative import CreativeEffects
+from services.upscaler import upscaler_instance
+from services.background import bg_remover_instance
+from services.eraser import eraser_instance
+from services.colorizer import colorizer_instance
+from services.analysis import analysis_instance
+from services.tools import tool_instance
+from services.creative import creative_instance
 
 # Import webhook router
 from webhook import router as webhook_router
