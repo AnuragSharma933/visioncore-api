@@ -16,6 +16,7 @@ transformers==4.47.1
 # Computer Vision Libraries
 kornia==0.7.3
 timm==1.0.12
+einops==0.8.0
 
 # Background Removal & Segmentation
 rembg==2.0.60
