@@ -1,3 +1,11 @@
+# ==========================================
+# COMPATIBILITY FIX - MUST BE FIRST!
+# ==========================================
+import sys
+import torchvision.transforms.functional as F
+sys.modules['torchvision.transforms.functional_tensor'] = F
+# ==========================================
+
 from fastapi import FastAPI, UploadFile, File, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -76,7 +84,7 @@ async def process_with_timeout(func, *args, timeout=60):
 # ENDPOINTS
 # ============================================================================
 
-@app.post("/v1/compress", dependencies=[Depends(check_access("compress"))])
+@app.post("/v1/compress")
 async def compress(
     file: UploadFile = File(...),
     quality: int = 85,
@@ -84,10 +92,10 @@ async def compress(
 ):
     """Compress image with smart optimization"""
     img = await load_img(file)
-    result = tool_instance.smart_compress(img, quality)
-    return return_img(result)
+    compressed_bytes = tool_instance.smart_compress(img, quality)
+    return StreamingResponse(io.BytesIO(compressed_bytes), media_type="image/jpeg")
 
-@app.post("/v1/palette", dependencies=[Depends(check_access("palette"))])
+@app.post("/v1/palette")
 async def color_palette(
     file: UploadFile = File(...),
     user: dict = Depends(check_access("palette"))
@@ -97,7 +105,7 @@ async def color_palette(
     colors = analysis_instance.get_palette(img)
     return {"colors": colors}
 
-@app.post("/v1/signature-rip", dependencies=[Depends(check_access("signature-rip"))])
+@app.post("/v1/signature-rip")
 async def signature_rip(
     file: UploadFile = File(...),
     user: dict = Depends(check_access("signature-rip"))
@@ -107,7 +115,7 @@ async def signature_rip(
     result = tool_instance.signature_rip(img)
     return return_img(result)
 
-@app.post("/v1/auto-tag", dependencies=[Depends(check_access("auto-tag"))])
+@app.post("/v1/auto-tag")
 async def auto_tag(
     file: UploadFile = File(...),
     user: dict = Depends(check_access("auto-tag"))
@@ -117,7 +125,7 @@ async def auto_tag(
     tags = analysis_instance.get_tags(img)
     return {"tags": tags}
 
-@app.post("/v1/upscale", dependencies=[Depends(check_access("upscale"))])
+@app.post("/v1/upscale")
 async def upscale(
     file: UploadFile = File(...),
     user: dict = Depends(check_access("upscale"))
@@ -131,7 +139,7 @@ async def upscale(
 
     return return_img(result)
 
-@app.post("/v1/remove-bg", dependencies=[Depends(check_access("remove-bg"))])
+@app.post("/v1/remove-bg")
 async def remove_background(
     file: UploadFile = File(...),
     user: dict = Depends(check_access("remove-bg"))
@@ -145,7 +153,7 @@ async def remove_background(
 
     return return_img(result)
 
-@app.post("/v1/portrait-mode", dependencies=[Depends(check_access("portrait-mode"))])
+@app.post("/v1/portrait-mode")
 async def portrait_mode(
     file: UploadFile = File(...),
     blur_strength: int = 15,
@@ -160,7 +168,7 @@ async def portrait_mode(
 
     return return_img(result)
 
-@app.post("/v1/sticker-maker", dependencies=[Depends(check_access("sticker-maker"))])
+@app.post("/v1/sticker-maker")
 async def sticker_maker(
     file: UploadFile = File(...),
     user: dict = Depends(check_access("sticker-maker"))
@@ -174,7 +182,7 @@ async def sticker_maker(
 
     return return_img(result)
 
-@app.post("/v1/colorize", dependencies=[Depends(check_access("colorize"))])
+@app.post("/v1/colorize")
 async def colorize(
     file: UploadFile = File(...),
     user: dict = Depends(check_access("colorize"))
@@ -188,7 +196,7 @@ async def colorize(
 
     return return_img(result)
 
-@app.post("/v1/anime", dependencies=[Depends(check_access("anime"))])
+@app.post("/v1/anime")
 async def anime_style(
     file: UploadFile = File(...),
     user: dict = Depends(check_access("anime"))
@@ -202,7 +210,7 @@ async def anime_style(
 
     return return_img(result)
 
-@app.post("/v1/instant-studio", dependencies=[Depends(check_access("instant-studio"))])
+@app.post("/v1/instant-studio")
 async def instant_studio(
     file: UploadFile = File(...),
     background_type: str = "professional",
@@ -217,7 +225,7 @@ async def instant_studio(
 
     return return_img(result)
 
-@app.post("/v1/extend", dependencies=[Depends(check_access("extend"))])
+@app.post("/v1/extend")
 async def extend_image(
     file: UploadFile = File(...),
     ratio: str = "9:16",
@@ -232,7 +240,7 @@ async def extend_image(
 
     return return_img(result)
 
-@app.post("/v1/magic-erase", dependencies=[Depends(check_access("magic-erase"))])
+@app.post("/v1/magic-erase")
 async def magic_erase(
     file: UploadFile = File(...),
     mask: UploadFile = File(...),
@@ -248,7 +256,7 @@ async def magic_erase(
 
     return return_img(result)
 
-@app.post("/v1/vectorize", dependencies=[Depends(check_access("vectorize"))])
+@app.post("/v1/vectorize")
 async def vectorize(
     file: UploadFile = File(...),
     user: dict = Depends(check_access("vectorize"))
@@ -265,7 +273,7 @@ async def vectorize(
         media_type="image/svg+xml"
     )
 
-@app.post("/v1/privacy-blur", dependencies=[Depends(check_access("privacy-blur"))])
+@app.post("/v1/privacy-blur")
 async def privacy_blur(
     file: UploadFile = File(...),
     user: dict = Depends(check_access("privacy-blur"))
