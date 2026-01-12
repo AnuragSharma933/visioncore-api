@@ -1,10 +1,14 @@
 import os
 from pathlib import Path
+import torch
 
 class Config:
     # Base directories
     BASE_DIR = Path(__file__).parent.absolute()
     WEIGHTS_DIR = BASE_DIR / "weights"
+
+    # Device configuration (GPU if available, else CPU)
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Supabase Configuration
     SUPABASE_URL = os.getenv("SUPABASE_URL", "")
