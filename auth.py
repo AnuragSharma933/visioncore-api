@@ -1,143 +1,136 @@
-from fastapi import HTTPException, Security, Depends
-from fastapi.security.api_key import APIKeyHeader
-from database import db
-from PIL import Image, ImageDraw, ImageFont
+from fastapi import Header, HTTPException
+from supabase import create_client
+from config import settings
+from PIL import Image, ImageDraw
 
-API_KEY_NAME = "X-API-Key"
-api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+# Supabase client
+supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
 
-# Feature access rules with demo support
-ACCESS_RULES = {
-    # FREE tier - full access (no demo needed)
-    "compress": {"FREE": "full", "STARTER": "full", "PRO": "full", "ENTERPRISE": "full"},
-    "palette": {"FREE": "full", "STARTER": "full", "PRO": "full", "ENTERPRISE": "full"},
-    "signature-rip": {"FREE": "full", "STARTER": "full", "PRO": "full", "ENTERPRISE": "full"},
-    "auto-tag": {"FREE": "full", "STARTER": "full", "PRO": "full", "ENTERPRISE": "full"},
+# ============================================================================
+# PRICING TIERS & FEATURE ACCESS
+# ============================================================================
 
-    # STARTER tier features - free users get demo
-    "upscale": {"FREE": "demo", "STARTER": "full", "PRO": "full", "ENTERPRISE": "full"},
-    "remove-bg": {"FREE": "demo", "STARTER": "full", "PRO": "full", "ENTERPRISE": "full"},
-    "portrait-mode": {"FREE": "demo", "STARTER": "full", "PRO": "full", "ENTERPRISE": "full"},
-    "sticker-maker": {"FREE": "demo", "STARTER": "full", "PRO": "full", "ENTERPRISE": "full"},
+FEATURE_TIERS = {
+    # FREE tier (4 features)
+    "compress": ["free", "basic", "pro", "enterprise"],
+    "palette": ["free", "basic", "pro", "enterprise"],
+    "signature-rip": ["free", "basic", "pro", "enterprise"],
+    "auto-tag": ["free", "basic", "pro", "enterprise"],
 
-    # PRO tier features - free/starter get demo
-    "colorize": {"FREE": "demo", "STARTER": "demo", "PRO": "full", "ENTERPRISE": "full"},
-    "anime": {"FREE": "demo", "STARTER": "demo", "PRO": "full", "ENTERPRISE": "full"},
-    "instant-studio": {"FREE": "demo", "STARTER": "demo", "PRO": "full", "ENTERPRISE": "full"},
-    "extend": {"FREE": "demo", "STARTER": "demo", "PRO": "full", "ENTERPRISE": "full"},
+    # BASIC tier (4 features)
+    "upscale": ["basic", "pro", "enterprise"],
+    "remove-bg": ["basic", "pro", "enterprise"],
+    "portrait-mode": ["basic", "pro", "enterprise"],
+    "sticker-maker": ["basic", "pro", "enterprise"],
 
-    # ENTERPRISE tier features - all others get locked or demo
-    "magic-erase": {"FREE": "locked", "STARTER": "locked", "PRO": "demo", "ENTERPRISE": "full"},
-    "vectorize": {"FREE": "locked", "STARTER": "locked", "PRO": "demo", "ENTERPRISE": "full"},
-    "privacy-blur": {"FREE": "locked", "STARTER": "locked", "PRO": "demo", "ENTERPRISE": "full"}
+    # PRO tier (4 features)
+    "colorize": ["pro", "enterprise"],
+    "anime": ["pro", "enterprise"],
+    "instant-studio": ["pro", "enterprise"],
+    "extend": ["pro", "enterprise"],
+
+    # ENTERPRISE tier (3 features)
+    "magic-erase": ["enterprise"],
+    "vectorize": ["enterprise"],
+    "privacy-blur": ["enterprise"]
 }
 
-DEMO_LIMITS = {
-    "FREE": 3,
-    "STARTER": 3,
-    "PRO": 3
-}
+def check_access(feature: str):
+    """Check if user has access to feature based on their tier"""
 
-async def get_current_user(api_key: str = Security(api_key_header)):
-    """Validates the API Key against Supabase"""
-    if not api_key:
-        raise HTTPException(
-            status_code=403,
-            detail="🔒 Missing X-API-Key header. Get FREE access at https://rapidapi.com/visioncore-api"
-        )
+    async def verify(
+        x_rapidapi_key: str = Header(None, alias="X-RapidAPI-Key")
+    ):
+        # Allow FREE features without API key
+        if feature in ["compress", "palette", "signature-rip", "auto-tag"]:
+            if not x_rapidapi_key:
+                return {"tier": "free", "feature": feature}
 
-    user = db.get_user(api_key)
-    if user:
-        return user
-    else:
-        raise HTTPException(
-            status_code=403,
-            detail="❌ Invalid API Key. Subscribe at https://rapidapi.com/visioncore-api"
-        )
+        # Require API key for paid features
+        if not x_rapidapi_key:
+            raise HTTPException(
+                status_code=401,
+                detail=f"API key required. Feature '{feature}' needs: {FEATURE_TIERS.get(feature, ['enterprise'])[0]} tier or higher"
+            )
 
-def check_access(endpoint_name: str):
-    """Checks Plan Level, Credit Balance, and Demo Usage"""
-    def _enforce(user: dict = Depends(get_current_user)):
-        user_plan = user["plan"]
-        access_level = ACCESS_RULES.get(endpoint_name, {}).get(user_plan, "locked")
+        # Fetch key from database
+        result = supabase.table("api_keys").select("*").eq("key", x_rapidapi_key).execute()
 
-        # 1. Check if feature is completely locked
-        if access_level == "locked":
-            upgrade_msg = {
-                "FREE": "🔥 This is a PREMIUM feature. Upgrade to STARTER ($9) to try it!",
-                "STARTER": "🎨 This is a PRO feature. Upgrade to PRO ($29) to unlock!",
-                "PRO": "⚡ This is ENTERPRISE-only. Upgrade to ENTERPRISE ($99)!"
-            }
+        if not result.data:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+
+        key_data = result.data[0]
+
+        # Check if key is active
+        if not key_data.get("active", False):
+            raise HTTPException(status_code=403, detail="API key is disabled")
+
+        user_tier = key_data.get("tier", "free")
+
+        # Check if user's tier has access to this feature
+        allowed_tiers = FEATURE_TIERS.get(feature, ["enterprise"])
+
+        if user_tier not in allowed_tiers:
             raise HTTPException(
                 status_code=403,
-                detail=upgrade_msg.get(user_plan, "Feature not available")
+                detail=f"Feature '{feature}' requires {allowed_tiers[0]} tier. Your tier: {user_tier}. Upgrade to access this feature."
             )
 
-        # 2. Check credit balance
-        if user["credits"] <= 0:
-            raise HTTPException(
-                status_code=429,
-                detail="💳 Out of credits! Upgrade your plan at https://rapidapi.com/visioncore-api"
-            )
+        # Handle demo mode for FREE tier
+        demo_mode = False
+        demos_left = 0
 
-        # 3. If demo mode, check demo count
-        if access_level == "demo":
-            demo_count = db.get_demo_count(user["key"], endpoint_name)
-            max_demos = DEMO_LIMITS.get(user_plan, 3)
-
-            if demo_count >= max_demos:
-                upgrade_msg = {
-                    "FREE": f"✨ Demo limit reached! Upgrade to STARTER ($9) for unlimited {endpoint_name}",
-                    "STARTER": f"🎨 Demo limit reached! Upgrade to PRO ($29) for unlimited {endpoint_name}",
-                    "PRO": f"⚡ Demo limit reached! Upgrade to ENTERPRISE ($99) for unlimited {endpoint_name}"
-                }
+        if user_tier == "free" and feature not in ["compress", "palette", "signature-rip", "auto-tag"]:
+            demos_used = key_data.get("demos_used", 0)
+            if demos_used >= 3:
                 raise HTTPException(
                     status_code=403,
-                    detail=upgrade_msg.get(user_plan, "Demo limit reached")
+                    detail="Free demos exhausted (3/3 used). Upgrade to continue."
                 )
 
-            # Increment demo counter
-            db.increment_demo(user["key"], endpoint_name)
+            # Increment demo usage
+            supabase.table("api_keys").update({
+                "demos_used": demos_used + 1
+            }).eq("key", x_rapidapi_key).execute()
 
-            # Mark this request as demo mode
-            user["_demo_mode"] = True
-            user["_demos_left"] = max_demos - demo_count - 1
+            demo_mode = True
+            demos_left = 3 - (demos_used + 1)
 
-        # 4. Deduct Credit
-        db.deduct_credit(user["key"])
-        return user
+        return {
+            "tier": user_tier,
+            "feature": feature,
+            "_demo_mode": demo_mode,
+            "_demos_left": demos_left
+        }
 
-    return _enforce
+    return verify
 
-def add_watermark(image: Image.Image, demos_left: int = 0) -> Image.Image:
-    """Add watermark banner to demo images"""
-    img = image.copy()
+
+def add_watermark(img: Image.Image, demos_left: int) -> Image.Image:
+    """Add watermark for demo users"""
+    draw = ImageDraw.Draw(img)
+
     width, height = img.size
+    text = f"DEMO MODE - {demos_left} demos left - Upgrade to remove"
 
-    # Create banner at bottom
-    banner_height = 60
-    banner = Image.new('RGBA', (width, banner_height), (0, 0, 0, 200))
-    draw = ImageDraw.Draw(banner)
+    # Add semi-transparent overlay
+    overlay = Image.new('RGBA', img.size, (255, 255, 255, 0))
+    draw_overlay = ImageDraw.Draw(overlay)
 
-    # Add text
+    # Draw text
     try:
-        font = ImageFont.truetype("arial.ttf", 24)
+        text_bbox = draw_overlay.textbbox((0, 0), text)
+        text_width = text_bbox[2] - text_bbox[0]
+        text_height = text_bbox[3] - text_bbox[1]
     except:
-        font = ImageFont.load_default()
+        text_width = 400
+        text_height = 20
 
-    text = f"⚡ DEMO MODE - {demos_left} demos left - Upgrade to remove watermark"
+    position = ((width - text_width) // 2, height - 50)
+    draw_overlay.text(position, text, fill=(255, 0, 0, 180))
 
-    # Center text
-    bbox = draw.textbbox((0, 0), text, font=font)
-    text_width = bbox[2] - bbox[0]
-    text_x = (width - text_width) // 2
-    text_y = (banner_height - (bbox[3] - bbox[1])) // 2
+    # Composite
+    img = img.convert('RGBA')
+    img = Image.alpha_composite(img, overlay)
 
-    draw.text((text_x, text_y), text, fill=(255, 255, 255, 255), font=font)
-
-    # Paste banner onto image
-    img_with_banner = Image.new('RGB', (width, height + banner_height))
-    img_with_banner.paste(img, (0, 0))
-    img_with_banner.paste(banner, (0, height), banner)
-
-    return img_with_banner
+    return img.convert('RGB')
