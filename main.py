@@ -1,41 +1,62 @@
-# ==========================================
-# COMPATIBILITY FIX - MUST BE FIRST!
-# ==========================================
 import sys
-import torchvision.transforms.functional as F
-sys.modules['torchvision.transforms.functional_tensor'] = F
-# ==========================================
-
-from fastapi import FastAPI, UploadFile, File, Depends, HTTPException
-from fastapi.responses import StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
-from PIL import Image
-from datetime import datetime
 import io
 import asyncio
-import secrets
-from config import settings
-from auth import check_access, add_watermark, supabase
+from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException
+from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+from PIL import Image
 
-# Import existing service INSTANCES
+# --- CONFIG & AUTH ---
+from config import settings
+from auth import get_current_user, add_watermark
+
+# --- IMPORT SERVICES ---
+# 1. New "Insane" AI Services
+from services.gen_ai import gen_ai_instance
+from services.fashion import fashion_instance
+from services.ocr import ocr_service
+
+# 2. Original Standard Services
 from services.upscaler import upscaler_instance
 from services.background import bg_remover_instance
-from services.eraser import eraser_instance
-from services.colorizer import colorizer_instance
-from services.analysis import analysis_instance
 from services.tools import tool_instance
+from services.analysis import analysis_instance
 from services.creative import creative_instance
+from services.eraser import eraser_instance
 
-# Import webhook router
-from webhook import router as webhook_router
+# Hotfix for Torch/Torchvision version mismatch in some envs
+import torchvision.transforms.functional as F
+sys.modules['torchvision.transforms.functional_tensor'] = F
 
+# ==========================================
+# ⚡ LIFESPAN MANAGER (Startup Optimization)
+# ==========================================
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print(f"🚀 {settings.API_TITLE} Initializing...")
+    
+    # Warmup lightweight models to prevent lag on first hit
+    print("✨ Warming up Fashion Engine...")
+    _ = fashion_instance.pose 
+    
+    # We don't preload Stable Diffusion (GenAI) here to save startup time.
+    # It will load on the first request (Lazy Loading).
+    
+    print("✅ System Ready for Requests")
+    yield
+    print("🛑 Shutting down...")
+
+# ==========================================
+# 🚀 APP SETUP
+# ==========================================
 app = FastAPI(
     title=settings.API_TITLE,
     version=settings.API_VERSION,
-    description=settings.API_DESCRIPTION
+    description="VisionCore Enterprise API with Hybrid AI Engine",
+    lifespan=lifespan
 )
 
-# Add CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -44,363 +65,259 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-# Include webhook routes
-app.include_router(webhook_router, tags=["Webhooks"])
-
-@app.get("/")
-async def root():
-    return {
-        "status": "healthy",
-        "version": settings.API_VERSION,
-        "message": "VisionCore API is running!",
-        "docs": "/docs",
-        "signup": "/v1/auth/signup",
-        "pricing": "/v1/pricing"
-    }
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-# ============================================================================
-# AUTH ENDPOINTS - AUTO SIGNUP & PRICING
-# ============================================================================
-
-@app.post("/v1/auth/signup")
-async def signup(email: str, name: str = None, tier: str = "free"):
-    """
-    Auto-generate API key with selected tier
-
-    Tiers:
-    - free: 4 features + 3 demos (FREE)
-    - basic: 8 features, watermark ($9.99/mo)
-    - pro: 12 features, no watermark ($29.99/mo)
-    - enterprise: All 15 features ($99.99/mo)
-    """
-    if tier not in ["free", "basic", "pro", "enterprise"]:
-        raise HTTPException(status_code=400, detail="Invalid tier. Choose: free, basic, pro, enterprise")
-
-    try:
-        # Generate API key
-        random_part = secrets.token_urlsafe(32)
-        api_key = f"vck_live_{random_part}"
-
-        # Check existing email
-        existing = supabase.table("api_keys").select("*").eq("email", email).execute()
-        if existing.data:
-            raise HTTPException(status_code=400, detail="Email already registered")
-
-        # Create API key
-        supabase.table("api_keys").insert({
-            "key": api_key,
-            "email": email,
-            "name": name,
-            "tier": tier,
-            "active": True,
-            "demos_used": 0,
-            "created_at": datetime.utcnow().isoformat()
-        }).execute()
-
-        tier_info = {
-            "free": {"features": 4, "price": "$0", "demos": 3},
-            "basic": {"features": 8, "price": "$9.99/mo", "demos": "unlimited"},
-            "pro": {"features": 12, "price": "$29.99/mo", "demos": "unlimited"},
-            "enterprise": {"features": 15, "price": "$99.99/mo", "demos": "unlimited"}
-        }
-
-        return {
-            "success": True,
-            "api_key": api_key,
-            "tier": tier,
-            "tier_info": tier_info[tier],
-            "message": f"API key generated! {tier.upper()} tier activated.",
-            "usage": "Add header: X-RapidAPI-Key: {api_key}"
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/v1/pricing")
-async def get_pricing():
-    """Get all pricing tiers and features"""
-    return {
-        "tiers": {
-            "free": {
-                "price": "$0",
-                "features_count": 4,
-                "features": ["Smart Compression", "Color Palette", "Signature Extract", "Auto Tag"],
-                "demos": 3,
-                "watermark": "No",
-                "rate_limit": "10/min"
-            },
-            "basic": {
-                "price": "$9.99/month",
-                "features_count": 8,
-                "features": ["All FREE", "4x Upscale", "Background Removal", "Portrait Blur", "Sticker Maker"],
-                "demos": "Unlimited",
-                "watermark": "Yes",
-                "rate_limit": "50/min"
-            },
-            "pro": {
-                "price": "$29.99/month",
-                "features_count": 12,
-                "features": ["All BASIC", "Colorize B&W", "Anime Style", "Studio Background", "Extend Image"],
-                "demos": "Unlimited",
-                "watermark": "No",
-                "rate_limit": "200/min"
-            },
-            "enterprise": {
-                "price": "$99.99/month",
-                "features_count": 15,
-                "features": ["All PRO", "Magic Erase", "Vectorize", "Privacy Blur"],
-                "demos": "Unlimited",
-                "watermark": "No",
-                "rate_limit": "Unlimited",
-                "support": "Priority"
-            }
-        }
-    }
-
-
-@app.get("/v1/auth/status")
-async def check_status(api_key: str):
-    """Check API key status and usage"""
-    result = supabase.table("api_keys").select("*").eq("key", api_key).execute()
-
-    if not result.data:
-        raise HTTPException(status_code=404, detail="Invalid API key")
-
-    key_data = result.data[0]
-
-    return {
-        "active": key_data["active"],
-        "tier": key_data["tier"],
-        "email": key_data.get("email"),
-        "demos_used": key_data.get("demos_used", 0),
-        "demos_remaining": 3 - key_data.get("demos_used", 0) if key_data["tier"] == "free" else "unlimited",
-        "created_at": key_data.get("created_at")
-    }
-
-
-# Helper functions
+# ==========================================
+# 🛠️ HELPERS
+# ==========================================
 async def load_img(file: UploadFile) -> Image.Image:
-    contents = await file.read()
-    return Image.open(io.BytesIO(contents)).convert("RGB")
+    try:
+        content = await file.read()
+        return Image.open(io.BytesIO(content)).convert("RGB")
+    except Exception as e:
+        raise HTTPException(400, f"Invalid Image File: {e}")
 
-def return_img(img: Image.Image) -> StreamingResponse:
+def return_img(img: Image.Image, fmt="JPEG"):
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    # Optimize JPEG to save bandwidth/storage
+    if fmt.upper() == "JPEG":
+        img.save(buf, format=fmt, quality=90, optimize=True)
+    else:
+        img.save(buf, format=fmt)
     buf.seek(0)
-    return StreamingResponse(buf, media_type="image/png")
+    return StreamingResponse(buf, media_type=f"image/{fmt.lower()}")
 
-async def process_with_timeout(func, *args, timeout=60):
+# Wrapper to prevent infinite hanging on CPU
+async def process_with_timeout(func, *args, timeout=180):
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(func, *args),
             timeout=timeout
         )
     except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Processing timeout")
+        raise HTTPException(504, "Processing Timed Out (Server Busy)")
+    except Exception as e:
+        raise HTTPException(500, f"Processing Failed: {str(e)}")
 
-# ============================================================================
-# IMAGE PROCESSING ENDPOINTS
-# ============================================================================
+# ==========================================
+# 1. FREE TIER ENDPOINTS (Utilities)
+# ==========================================
+
+@app.get("/")
+def home():
+    return {
+        "status": "Online",
+        "version": settings.API_VERSION,
+        "docs": "/docs"
+    }
 
 @app.post("/v1/compress")
-async def compress(
-    file: UploadFile = File(...),
-    quality: int = 85,
-    user: dict = Depends(check_access("compress"))
-):
-    """Smart Compression - FREE tier"""
+async def compress(file: UploadFile = File(...), quality: int = 80, user: dict = Depends(get_current_user("compress"))):
     img = await load_img(file)
-    compressed_bytes = tool_instance.smart_compress(img, quality)
-    return StreamingResponse(io.BytesIO(compressed_bytes), media_type="image/jpeg")
+    compressed = tool_instance.smart_compress(img, quality)
+    return StreamingResponse(io.BytesIO(compressed), media_type="image/jpeg")
 
 @app.post("/v1/palette")
-async def color_palette(
-    file: UploadFile = File(...),
-    user: dict = Depends(check_access("palette"))
-):
-    """Color Palette - FREE tier"""
+async def palette(file: UploadFile = File(...), user: dict = Depends(get_current_user("palette"))):
     img = await load_img(file)
     colors = analysis_instance.get_palette(img)
     return {"colors": colors}
 
 @app.post("/v1/signature-rip")
-async def signature_rip(
-    file: UploadFile = File(...),
-    user: dict = Depends(check_access("signature-rip"))
-):
-    """Signature Extract - FREE tier"""
+async def signature_rip(file: UploadFile = File(...), user: dict = Depends(get_current_user("signature-rip"))):
     img = await load_img(file)
     result = tool_instance.signature_rip(img)
-    return return_img(result)
+    return return_img(result, "PNG")
 
 @app.post("/v1/auto-tag")
-async def auto_tag(
-    file: UploadFile = File(...),
-    user: dict = Depends(check_access("auto-tag"))
-):
-    """Auto Tag - FREE tier"""
+async def auto_tag(file: UploadFile = File(...), user: dict = Depends(get_current_user("auto-tag"))):
     img = await load_img(file)
     tags = analysis_instance.get_tags(img)
     return {"tags": tags}
 
+@app.post("/v1/convert-format")
+async def convert_format(file: UploadFile = File(...), format: str = Form("JPEG"), user: dict = Depends(get_current_user("convert-format"))):
+    img = await load_img(file)
+    # Simple logic using return_img helper
+    return return_img(img, format.upper())
+
+# ==========================================
+# 2. BASIC TIER ENDPOINTS ($9/mo)
+# ==========================================
+
 @app.post("/v1/upscale")
-async def upscale(
-    file: UploadFile = File(...),
-    user: dict = Depends(check_access("upscale"))
-):
-    """4x Upscale - BASIC tier+"""
+async def upscale(file: UploadFile = File(...), user: dict = Depends(get_current_user("upscale"))):
     img = await load_img(file)
     result = await process_with_timeout(upscaler_instance.process_image, img, timeout=120)
-
-    if user.get("_demo_mode"):
+    
+    if user.get("_demo_mode", False):
         result = add_watermark(result, user.get("_demos_left", 0))
-
-    return return_img(result)
+        
+    return return_img(result, "PNG")
 
 @app.post("/v1/remove-bg")
-async def remove_background(
-    file: UploadFile = File(...),
-    user: dict = Depends(check_access("remove-bg"))
-):
-    """Background Removal - BASIC tier+"""
+async def remove_bg(file: UploadFile = File(...), user: dict = Depends(get_current_user("remove-bg"))):
     img = await load_img(file)
-    result = await process_with_timeout(bg_remover_instance.remove_background, img, timeout=60)
-
-    if user.get("_demo_mode"):
+    result = bg_remover_instance.remove_background(img)
+    
+    if user.get("_demo_mode", False):
         result = add_watermark(result, user.get("_demos_left", 0))
+        
+    return return_img(result, "PNG")
 
+@app.post("/v1/tattoo-preview")
+async def tattoo_preview(body: UploadFile = File(...), tattoo: UploadFile = File(...), user: dict = Depends(get_current_user("tattoo-preview"))):
+    body_img = await load_img(body)
+    tattoo_img = await load_img(tattoo)
+    result = await process_with_timeout(fashion_instance.tattoo_preview, body_img, tattoo_img, timeout=60)
+    
+    if user.get("_demo_mode", False):
+        result = add_watermark(result, user.get("_demos_left", 0))
+        
     return return_img(result)
 
+@app.post("/v1/size-visualizer")
+async def size_visualizer(file: UploadFile = File(...), size: str = Form("M"), user: dict = Depends(get_current_user("size-visualizer"))):
+    img = await load_img(file)
+    result = fashion_instance.size_visualizer(img, size)
+    
+    if user.get("_demo_mode", False):
+        result = add_watermark(result, user.get("_demos_left", 0))
+        
+    return return_img(result)
+
+@app.post("/v1/ocr-extract")
+async def extract_text(file: UploadFile = File(...), user: dict = Depends(get_current_user("ocr"))):
+    img = await load_img(file)
+    # OCR is fast but safer to thread
+    text_data = await process_with_timeout(ocr_service.extract, img, timeout=60)
+    return {"text": text_data}
+
 @app.post("/v1/portrait-mode")
-async def portrait_mode(
-    file: UploadFile = File(...),
-    blur_strength: int = 15,
-    user: dict = Depends(check_access("portrait-mode"))
-):
-    """Portrait Blur - BASIC tier+"""
+async def portrait_mode(file: UploadFile = File(...), user: dict = Depends(get_current_user("portrait-mode"))):
     img = await load_img(file)
     result = creative_instance.portrait_mode(img)
-
-    if user.get("_demo_mode"):
+    
+    if user.get("_demo_mode", False):
         result = add_watermark(result, user.get("_demos_left", 0))
-
+        
     return return_img(result)
 
 @app.post("/v1/sticker-maker")
-async def sticker_maker(
-    file: UploadFile = File(...),
-    user: dict = Depends(check_access("sticker-maker"))
-):
-    """Sticker Maker - BASIC tier+"""
+async def sticker_maker(file: UploadFile = File(...), user: dict = Depends(get_current_user("sticker-maker"))):
     img = await load_img(file)
     result = creative_instance.sticker_maker(img)
-
-    if user.get("_demo_mode"):
+    
+    if user.get("_demo_mode", False):
         result = add_watermark(result, user.get("_demos_left", 0))
+        
+    return return_img(result, "PNG")
 
-    return return_img(result)
+# ==========================================
+# 3. PRO TIER ENDPOINTS ($29/mo)
+# ==========================================
 
-@app.post("/v1/colorize")
-async def colorize(
-    file: UploadFile = File(...),
-    user: dict = Depends(check_access("colorize"))
+@app.post("/v1/age-progression")
+async def age_progression(
+    file: UploadFile = File(...), 
+    age: int = Form(...), 
+    gender: str = Form("person"), 
+    user: dict = Depends(get_current_user("age-progression"))
 ):
-    """Colorize B&W - PRO tier+"""
     img = await load_img(file)
-    result = await process_with_timeout(colorizer_instance.process_image, img, timeout=90)
-
-    if user.get("_demo_mode"):
+    # Heavy AI Task - 180s timeout
+    result = await process_with_timeout(gen_ai_instance.age_progression, img, age, gender, timeout=180)
+    
+    if user.get("_demo_mode", False):
         result = add_watermark(result, user.get("_demos_left", 0))
-
+        
     return return_img(result)
 
-@app.post("/v1/anime")
+@app.post("/v1/anime-style")
 async def anime_style(
-    file: UploadFile = File(...),
-    user: dict = Depends(check_access("anime"))
+    file: UploadFile = File(...), 
+    style: str = Form("modern"), 
+    user: dict = Depends(get_current_user("anime-style"))
 ):
-    """Anime Style - PRO tier+"""
     img = await load_img(file)
-    result = creative_instance.anime_style(img)
-
-    if user.get("_demo_mode"):
+    result = await process_with_timeout(gen_ai_instance.anime_style, img, style, timeout=180)
+    
+    if user.get("_demo_mode", False):
         result = add_watermark(result, user.get("_demos_left", 0))
-
+        
     return return_img(result)
 
 @app.post("/v1/instant-studio")
-async def instant_studio(
-    file: UploadFile = File(...),
-    background_type: str = "professional",
-    user: dict = Depends(check_access("instant-studio"))
-):
-    """Studio Background - PRO tier+"""
+async def instant_studio(file: UploadFile = File(...), user: dict = Depends(get_current_user("instant-studio"))):
     img = await load_img(file)
     result = creative_instance.instant_studio(img)
-
-    if user.get("_demo_mode"):
+    
+    if user.get("_demo_mode", False):
         result = add_watermark(result, user.get("_demos_left", 0))
-
+        
     return return_img(result)
 
 @app.post("/v1/extend")
-async def extend_image(
-    file: UploadFile = File(...),
-    ratio: str = "9:16",
-    user: dict = Depends(check_access("extend"))
-):
-    """Extend Image - PRO tier+"""
+async def extend(file: UploadFile = File(...), user: dict = Depends(get_current_user("extend"))):
     img = await load_img(file)
     result = tool_instance.extend_image(img)
-
-    if user.get("_demo_mode"):
+    
+    if user.get("_demo_mode", False):
         result = add_watermark(result, user.get("_demos_left", 0))
+        
+    return return_img(result)
 
+@app.post("/v1/smart-classify")
+async def smart_classify(file: UploadFile = File(...), user: dict = Depends(get_current_user("smart-classify"))):
+    img = await load_img(file)
+    # Assuming vision_pro service logic or analysis service
+    # Using analysis service fallback if vision_pro wasn't created in your last step
+    result = analysis_instance.get_tags(img) # Fallback to existing
+    return {"tags": result}
+
+# ==========================================
+# 4. ENTERPRISE TIER ENDPOINTS ($99/mo)
+# ==========================================
+
+@app.post("/v1/magic-fill")
+async def magic_fill(
+    file: UploadFile = File(...), 
+    mask: UploadFile = File(...), 
+    prompt: str = Form(...), 
+    user: dict = Depends(get_current_user("magic-fill"))
+):
+    img = await load_img(file)
+    mask_img = await load_img(mask)
+    result = await process_with_timeout(gen_ai_instance.magic_fill, img, mask_img, prompt, timeout=180)
+    
+    if user.get("_demo_mode", False):
+        result = add_watermark(result, user.get("_demos_left", 0))
+        
     return return_img(result)
 
 @app.post("/v1/magic-erase")
-async def magic_erase(
-    file: UploadFile = File(...),
-    mask: UploadFile = File(...),
-    user: dict = Depends(check_access("magic-erase"))
-):
-    """Magic Erase - ENTERPRISE tier"""
+async def magic_erase(file: UploadFile = File(...), mask: UploadFile = File(...), user: dict = Depends(get_current_user("magic-erase"))):
     img = await load_img(file)
     mask_img = await load_img(mask)
-    result = await process_with_timeout(eraser_instance.process_image, img, mask_img, timeout=90)
-
+    result = await process_with_timeout(eraser_instance.process_image, img, mask_img, timeout=120)
+    
+    if user.get("_demo_mode", False):
+        result = add_watermark(result, user.get("_demos_left", 0))
+        
     return return_img(result)
 
 @app.post("/v1/vectorize")
-async def vectorize(
-    file: UploadFile = File(...),
-    user: dict = Depends(check_access("vectorize"))
-):
-    """Vectorize - ENTERPRISE tier"""
+async def vectorize(file: UploadFile = File(...), user: dict = Depends(get_current_user("vectorize"))):
     img = await load_img(file)
     svg_data = tool_instance.convert_to_svg(img)
-
-    return StreamingResponse(
-        io.BytesIO(svg_data.encode()),
-        media_type="image/svg+xml"
-    )
+    return StreamingResponse(io.BytesIO(svg_data.encode()), media_type="image/svg+xml")
 
 @app.post("/v1/privacy-blur")
-async def privacy_blur(
-    file: UploadFile = File(...),
-    user: dict = Depends(check_access("privacy-blur"))
-):
-    """Privacy Blur - ENTERPRISE tier"""
+async def privacy_blur(file: UploadFile = File(...), user: dict = Depends(get_current_user("privacy-blur"))):
     img = await load_img(file)
     result = analysis_instance.privacy_blur(img)
-
+    
+    if user.get("_demo_mode", False):
+        result = add_watermark(result, user.get("_demos_left", 0))
+        
     return return_img(result)
 
 if __name__ == "__main__":
